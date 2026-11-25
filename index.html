@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light">
+<meta name="description" content="아세테크 고객사의 물류 현장과 자동화 도입 사례를 소개합니다.">
 <title>아세테크 고객 뉴스룸</title>
 <style>
 :root {
@@ -310,6 +311,8 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 </script>
+
+
 </head>
 <body>
 <header class="top">
@@ -460,6 +463,9 @@ const seed = JSON.parse(byId("newsroomData").textContent);
 const editable = seed.mode === "editor";
 const storageKey = "newsroom:" + seed.storageId;
 const template = document.documentElement.cloneNode(true);
+const webToken = document.querySelector('meta[name="newsroom-publish-token"]')?.content;
+const webRevision = document.querySelector('meta[name="newsroom-publish-revision"]')?.content;
+for (const stamp of template.querySelectorAll('meta[name^="newsroom-publish-"]')) stamp.remove();
 const categories = { all: ["전체", ""], case: ["구축사례", ""], customer: ["고객사 소식", "customer"], event: ["전시·인터뷰", "event"], partner: ["협력·사업", "partner"] };
 const publicCategories = new Set(["case", "customer"]);
 const fields = ["title", "category", "status", "source", "date", "url", "summary", "role", "keywords", "reviewNote"];
@@ -701,14 +707,13 @@ function saveArticle(event) {
   flash("기사를 저장했습니다.");
 }
 
-function archive(removeDrafts) {
+function makeSnapshot(removeDrafts) {
   const all = articleList();
   const articles = removeDrafts
     ? all.filter(isPublicArticle).map(({ reviewNote, ...publicArticle }) => publicArticle)
     : all;
   if (!articles.length) {
-    flash("저장할 기사가 없습니다.");
-    return;
+    return null;
   }
   const mode = removeDrafts ? "reader" : "editor";
   const snapshot = {
@@ -733,7 +738,16 @@ function archive(removeDrafts) {
     });
     documentCopy.querySelector("#feed").replaceChildren(...rows);
   }
-  const file = new Blob(["<!doctype html>\n", documentCopy.outerHTML], { type: "text/html;charset=utf-8" });
+  return { html: "<!doctype html>\n" + documentCopy.outerHTML, updated: snapshot.updated };
+}
+
+function archive(removeDrafts) {
+  const snapshot = makeSnapshot(removeDrafts);
+  if (!snapshot) {
+    flash("저장할 기사가 없습니다.");
+    return;
+  }
+  const file = new Blob([snapshot.html], { type: "text/html;charset=utf-8" });
   const blobUrl = URL.createObjectURL(file);
   const link = element("a");
   link.href = blobUrl;
@@ -743,6 +757,35 @@ function archive(removeDrafts) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   flash(removeDrafts ? "열람용 HTML을 저장했습니다." : "편집본을 저장했습니다.");
+}
+
+async function publishWeb() {
+  const reader = makeSnapshot(true);
+  const editor = makeSnapshot(false);
+  if (!reader || !editor) {
+    flash("웹에 반영할 기사가 없습니다.");
+    return;
+  }
+  const button = byId("publishWeb");
+  button.disabled = true;
+  button.textContent = "반영 중";
+  try {
+    const result = await fetch("/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Newsroom-Token": webToken },
+      body: JSON.stringify({ editor: editor.html, reader: reader.html, revision: webRevision })
+    });
+    const state = await result.json();
+    if (!result.ok) throw new Error(state.error);
+    sessionStorage.setItem("newsroomPublishNotice", state.changed
+      ? "게시 요청을 보냈습니다. GitHub Pages 배포가 끝나면 같은 주소에서 바뀝니다."
+      : "웹 열람본이 최신입니다.");
+    window.location.reload();
+  } catch (error) {
+    flash(error.message || "게시 요청을 완료하지 못했습니다.");
+    button.disabled = false;
+    button.textContent = "웹에 반영";
+  }
 }
 
 function selectFilter(id) {
@@ -775,6 +818,13 @@ if (editable) {
     selectFilter(filter);
   });
   byId("share").addEventListener("click", () => archive(true));
+  if (webToken && webRevision) {
+    byId("publishWeb").hidden = false;
+    byId("publishWeb").addEventListener("click", () => { void publishWeb(); });
+    const notice = sessionStorage.getItem("newsroomPublishNotice");
+    sessionStorage.removeItem("newsroomPublishNotice");
+    if (notice) flash(notice);
+  }
   byId("backup").addEventListener("click", () => archive(false));
   byId("add").addEventListener("click", () => openEditor(null));
   byId("cancel").addEventListener("click", () => byId("editDialog").close());
